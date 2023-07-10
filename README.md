@@ -1,6 +1,6 @@
 # ESP32 B Route to MQTT Smart Meter
 
-M5StickCからWi-SUNアダプタでスマートメーターにアクセスし以下のプロパティを(ほぼ)リアルタイムに取得してMQTT BrokerにPublishする
+M5StickCからスマートメーターにアクセスし、以下のプロパティを(ほぼ)リアルタイムに取得してMQTTでPublishする
 
 * 瞬時電力計測値
 * 瞬時電流計測値(T相)
@@ -9,12 +9,12 @@ M5StickCからWi-SUNアダプタでスマートメーターにアクセスし以
 * 係数
 * 積算電力量単位
 
-Home Assistantの[Energy Management](https://www.home-assistant.io/docs/energy/)で[Electricity Grid](https://www.home-assistant.io/docs/energy/electricity-grid/)として振る舞うことができるようになる
+Home AssistantからSubscribeすることで[Electricity Grid](https://www.home-assistant.io/docs/energy/electricity-grid/)としてデータを追跡できる
 
 ## Requirements
 
-* Bルートの開通手続き
-* [M5StickC](https://www.switch-science.com/products/6470)
+* Bルートの開通
+* [M5StickC/M5StickC Plus](https://www.switch-science.com/products/6470)
 * [BP35A1 Wi-SUN Module](https://www.rohm.co.jp/products/wireless-communication/specified-low-power-radio-modules/bp35a1-product)
 * [Wi-SUN HAT](https://www.switch-science.com/products/7612)
 * MQTT Broker (e.g. [Mosquitto](https://mosquitto.org))
@@ -22,10 +22,10 @@ Home Assistantの[Energy Management](https://www.home-assistant.io/docs/energy/)
 
 ## Install
 
-1. MQTT Brokerを立てておく
+1. MQTT Brokerを立てる
 2. [`_SmartMeterConfig.h`](include/_SmartMeterConfig.h)を`SmartMeterConfig.h`にリネームして設定する
 3. ファームウェアをビルドして起動する
-4. しばらくすると取得値をシリアルに出力する
+4. しばらくすると取得値をシリアル出力する
 5. BrokerやSubscriberのログを見てPublishできてることを確認する
 
 ## MQTT Subscriber (Home Assistants)
@@ -73,7 +73,7 @@ mqtt:
 
 ### Energy Management - Electricity Grid
 
-積算電力量計測値をElectricity Gridとして登録すると消費電力やコストが追跡できるようになる
+MQTT Sensorに追加した積算電力量計測値(`cumulative_energy`)をElectricity Gridとして登録すると、消費電力やコストが追跡できるようになる
 
 ![](doc/electricity_grid.png)
 
