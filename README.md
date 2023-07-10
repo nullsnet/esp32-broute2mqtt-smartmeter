@@ -1,6 +1,6 @@
 # ESP32 B Route to MQTT Smart Meter
 
-M5StickCからWi-SUNアダプタでスマートメーターにアクセスし、以下のプロパティを(ほぼ)リアルタイムに取得してMQTT BrokerにPublishする。
+M5StickCからWi-SUNアダプタでスマートメーターにアクセスし以下のプロパティを(ほぼ)リアルタイムに取得してMQTT BrokerにPublishする
 
 * 瞬時電力計測値
 * 瞬時電流計測値(T相)
@@ -9,21 +9,23 @@ M5StickCからWi-SUNアダプタでスマートメーターにアクセスし、
 * 係数
 * 積算電力量単位
 
+Home Assistantの[Energy Management](https://www.home-assistant.io/docs/energy/)で[Electricity Grid](https://www.home-assistant.io/docs/energy/electricity-grid/)として振る舞うことができるようになる
+
 ## Requirements
 
 * Bルートの開通手続き
 * [M5StickC](https://www.switch-science.com/products/6470)
 * [BP35A1 Wi-SUN Module](https://www.rohm.co.jp/products/wireless-communication/specified-low-power-radio-modules/bp35a1-product)
 * [Wi-SUN HAT](https://www.switch-science.com/products/7612)
-* MQTT Broker (e.g. Mosquitto)
-* MQTT Subscriber (e.g. Home Assistant)
+* MQTT Broker (e.g. [Mosquitto](https://mosquitto.org))
+* MQTT Subscriber (e.g. [Home Assistant](https://www.home-assistant.io))
 
 ## Install
 
 1. MQTT Brokerを立てておく
 2. [`_SmartMeterConfig.h`](include/_SmartMeterConfig.h)を`SmartMeterConfig.h`にリネームして設定する
 3. ファームウェアをビルドして起動する
-4. 設定が合っていればしばらくすると取得値をシリアルに出力する
+4. しばらくすると取得値をシリアルに出力する
 5. BrokerやSubscriberのログを見てPublishできてることを確認する
 
 ## MQTT Subscriber (Home Assistants)
@@ -32,7 +34,50 @@ M5StickCからWi-SUNアダプタでスマートメーターにアクセスし、
 ![](doc/instantaneous_power_graph.png)
 ![](doc/energy_graph.png)
 
-## Log
+### configuration.yaml
+
+Home Assistantには[MQTT Sensor](https://www.home-assistant.io/integrations/sensor.mqtt/)として登録する
+
+```yaml
+mqtt:
+  sensor:
+    - state_topic: "SmartMeter/Power/Instantaneous"
+      unique_id: instantaneous_power
+      name: "Instantaneous Power"
+      device_class: power
+      unit_of_measurement: W
+      state_class: measurement
+      icon: mdi:flash
+    - state_topic: "SmartMeter/Energy/Cumulative/Positive"
+      unique_id: cumulative_energy
+      name: "Cumulative Energy Positive"
+      device_class: energy
+      unit_of_measurement: kWh
+      state_class: total_increasing
+      icon: mdi:flash
+    - state_topic: "SmartMeter/Current/Instantaneous/R"
+      unique_id: instantaneous_current_r
+      name: "Instantaneous Current R"
+      device_class: current
+      unit_of_measurement: A
+      state_class: measurement
+      icon: mdi:flash
+    - state_topic: "SmartMeter/Current/Instantaneous/T"
+      unique_id: instantaneous_current_t
+      name: "Instantaneous Current T"
+      device_class: current
+      unit_of_measurement: A
+      state_class: measurement
+      icon: mdi:flash
+```
+
+### Energy Management - Electricity Grid
+
+積算電力量計測値をElectricity Gridとして登録すると消費電力やコストが追跡できるようになる
+
+![](doc/electricity_grid.png)
+
+## ESP32 Log
 ### Level 3 (Info)
 
 ```
@@ -84,4 +129,19 @@ M5StickCからWi-SUNアダプタでスマートメーターにアクセスし、
 [115343][I][main.cpp:120] loop(): CumulativeEnergyPositive : 4757.500000 kWh
 [115346][I][main.cpp:121] loop(): InstantaneousCurrentR    : 4.000000 A
 [115353][I][main.cpp:122] loop(): InstantaneousCurrentT    : 7.000000 A
+```
+
+## mosquitto Log
+
+```
+1689000942: Received PINGREQ from ESPSmartMeter
+1689000942: Sending PINGRESP to ESPSmartMeter
+1689000946: Received PUBLISH from ESPSmartMeter (d0, q0, r0, m0, 'SmartMeter/Power/Instantaneous', ... (3 bytes))
+1689000946: Sending PUBLISH to 2gFmQuKY7ClfRO0o7q34vt (d0, q0, r0, m0, 'SmartMeter/Power/Instantaneous', ... (3 bytes))
+1689000946: Received PUBLISH from ESPSmartMeter (d0, q0, r0, m0, 'SmartMeter/Energy/Cumulative/Positive', ... (7 bytes))
+1689000946: Sending PUBLISH to 2gFmQuKY7ClfRO0o7q34vt (d0, q0, r0, m0, 'SmartMeter/Energy/Cumulative/Positive', ... (7 bytes))
+1689000946: Received PUBLISH from ESPSmartMeter (d0, q0, r0, m0, 'SmartMeter/Current/Instantaneous/R', ... (4 bytes))
+1689000946: Sending PUBLISH to 2gFmQuKY7ClfRO0o7q34vt (d0, q0, r0, m0, 'SmartMeter/Current/Instantaneous/R', ... (4 bytes))
+1689000946: Received PUBLISH from ESPSmartMeter (d0, q0, r0, m0, 'SmartMeter/Current/Instantaneous/T', ... (4 bytes))
+1689000946: Sending PUBLISH to 2gFmQuKY7ClfRO0o7q34vt (d0, q0, r0, m0, 'SmartMeter/Current/Instantaneous/T', ... (4 bytes))
 ```
