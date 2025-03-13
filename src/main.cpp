@@ -114,8 +114,9 @@ void setup() {
 }
 
 void loop() {
-    static bool display       = false;
-    static int failed_counter = 0;
+    static bool display                   = false;
+    static int failed_counter             = 0;
+    static bool initialized_constant_data = false;
 
     M5.update();
     if (M5.BtnA.wasPressed()) {
@@ -135,13 +136,16 @@ void loop() {
             failed_counter++;
             return;
         }
-        if (initConstantData() == false) {
+    }
+
+    if (initialized_constant_data == false) {
+        initialized_constant_data = initConstantData();
+        if (initialized_constant_data == false) {
             failed_counter++;
             return;
-        } else {
-            log_i("ConvertCumulativeEnergyUnit : %f", echonet.cumulativeEnergyUnit);
-            log_i("SyntheticTransformationRatio: %d", echonet.syntheticTransformationRatio);
         }
+        log_i("ConvertCumulativeEnergyUnit : %f", echonet.cumulativeEnergyUnit);
+        log_i("SyntheticTransformationRatio: %d", echonet.syntheticTransformationRatio);
     }
 
     mqttLoop();
