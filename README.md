@@ -41,6 +41,11 @@ Home Assistantには[MQTT Sensor](https://www.home-assistant.io/integrations/sen
 ```yaml
 mqtt:
   sensor:
+    - state_topic: "SmartMeter/Status"
+      unique_id: smartmeter_status
+      name: "SmartMeter Status"
+      device_class: enum
+      icon: mdi:flash
     - state_topic: "SmartMeter/Power/Instantaneous"
       unique_id: instantaneous_power
       name: "Instantaneous Power"
@@ -48,6 +53,9 @@ mqtt:
       unit_of_measurement: W
       state_class: measurement
       icon: mdi:flash
+      availability:
+        - topic: "SmartMeter/Status"
+          payload_available: "connected"
     - state_topic: "SmartMeter/Energy/Cumulative/Positive"
       unique_id: cumulative_energy
       name: "Cumulative Energy Positive"
@@ -55,6 +63,9 @@ mqtt:
       unit_of_measurement: kWh
       state_class: total_increasing
       icon: mdi:flash
+      availability:
+        - topic: "SmartMeter/Status"
+          payload_available: "connected"
     - state_topic: "SmartMeter/Current/Instantaneous/R"
       unique_id: instantaneous_current_r
       name: "Instantaneous Current R"
@@ -62,6 +73,9 @@ mqtt:
       unit_of_measurement: A
       state_class: measurement
       icon: mdi:flash
+      availability:
+        - topic: "SmartMeter/Status"
+          payload_available: "connected"
     - state_topic: "SmartMeter/Current/Instantaneous/T"
       unique_id: instantaneous_current_t
       name: "Instantaneous Current T"
@@ -69,6 +83,9 @@ mqtt:
       unit_of_measurement: A
       state_class: measurement
       icon: mdi:flash
+      availability:
+        - topic: "SmartMeter/Status"
+          payload_available: "connected"
 ```
 
 ### Energy Management - Electricity Grid
