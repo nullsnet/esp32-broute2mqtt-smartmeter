@@ -11,7 +11,7 @@ PubSubClient mqtt(MQTT_SERVER_URL, MQTT_SERVER_PORT, client);
 LowVoltageSmartElectricEnergyMeterClass echonet;
 
 void mqttLoop() {
-    if (!mqtt.loop()) {
+    if (!mqtt.loop() || !client.connected()) {
         static int failed_counter = 0;
         while (!client.connected()) {
             if (mqtt.connect(MQTT_CONNECT_ID, MQTT_CONNECT_USER, NULL, "SmartMeter/Status", 0, true, "offline")) {
@@ -24,6 +24,7 @@ void mqttLoop() {
             }
             delay(1000);
         }
+        mqtt.loop();
     }
 }
 
@@ -107,6 +108,7 @@ void setup() {
     M5.Axp.ScreenBreath(0);
     M5.Lcd.setRotation(3);
     WiFi.onEvent(WiFiEvent);
+    mqtt.setKeepAlive(60);
     wisun.begin(115200, SERIAL_8N1, BP35A1_RX, BP35A1_TX, false, 20000UL);
     wisun.setStatusChangeCallback(Bp35a1StatusChangedCallback);
 }
