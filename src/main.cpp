@@ -14,14 +14,14 @@ void mqttLoop() {
     if (!mqtt.loop()) {
         static int failed_counter = 0;
         while (!client.connected()) {
-            if (mqtt.connect(MQTT_CONNECT_ID, MQTT_CONNECT_USER, NULL, "SmartMeter/Status/BRoute", 0, true, "offline")) {
+            if (mqtt.connect(MQTT_CONNECT_ID, MQTT_CONNECT_USER, NULL, "SmartMeter/Status", 0, true, "offline")) {
                 failed_counter = 0;
-                mqtt.publish("SmartMeter/Status/mqtt", "connected");
             } else {
                 failed_counter++;
             }
-            if (failed_counter > 10)
+            if (failed_counter > 10) {
                 esp_restart();
+            }
             delay(1000);
         }
     }
@@ -31,12 +31,16 @@ void Bp35a1StatusChangedCallback(BP35A1::SkStatus status) {
     mqttLoop();
     switch (status) {
         case BP35A1::SkStatus::uninitialized:
+            mqtt.publish("SmartMeter/Status", "uninitialized", true);
+            break;
         case BP35A1::SkStatus::connecting:
+            mqtt.publish("SmartMeter/Status", "connecting", true);
+            break;
         case BP35A1::SkStatus::scanning:
-            mqtt.publish("SmartMeter/Status/BRoute", "offline", true);
+            mqtt.publish("SmartMeter/Status", "scanning", true);
             break;
         case BP35A1::SkStatus::connected:
-            mqtt.publish("SmartMeter/Status/BRoute", "online", true);
+            mqtt.publish("SmartMeter/Status", "connected", true);
             break;
         default:
             break;
@@ -75,45 +79,77 @@ bool initConstantData(uint32_t delayms = 100, uint32_t timeoutms = 3000) {
         LowVoltageSmartElectricEnergyMeterClass::Property::CumulativeEnergyUnit,
     });
     echonet.generateGetRequest(properties);
-    if (wisun.sendUdpData(echonet.getRawData().data(), echonet.size(), 100, properties.size() * 3000))
-        if (echonet.load(wisun.getUdpData(100, properties.size() * 3000).payload.c_str()) && echonet.initConstantData())
+    if (wisun.sendUdpData(echonet.getRawData().data(), echonet.size(), 100, properties.size() * 3000)) {
+        if (echonet.load(wisun.getUdpData(100, properties.size() * 3000).payload.c_str()) && echonet.initConstantData()) {
             return true;
+        }
+    }
     return false;
+}
+
+void WiFiEvent(WiFiEvent_t event) {
+    switch (event) {
+        case SYSTEM_EVENT_STA_GOT_IP:
+            mqtt.publish("SmartMeter/Status", "online");
+            break;
+        case SYSTEM_EVENT_STA_DISCONNECTED:
+            WiFi.disconnect();
+            WiFi.begin(WIFI_SSID, WIFI_PASSPHRASE);
+            delay(WIFI_DELAY);
+            break;
+        default:
+            break;
+    }
 }
 
 void setup() {
     M5.begin();
     M5.Axp.ScreenBreath(0);
-
-    WiFi.begin(WIFI_SSID, WIFI_PASSPHRASE);
-    while (WiFi.status() != WL_CONNECTED)
-        delay(500);
-
+    M5.Lcd.setRotation(3);
+    WiFi.onEvent(WiFiEvent);
     wisun.begin(115200, SERIAL_8N1, BP35A1_RX, BP35A1_TX, false, 20000UL);
     wisun.setStatusChangeCallback(Bp35a1StatusChangedCallback);
-
-    if (!wisun.initialize())
-        esp_restart();
-
-    while (!initConstantData())
-        delay(1000);
-
-    log_i("ConvertCumulativeEnergyUnit : %f", echonet.cumulativeEnergyUnit);
-    log_i("SyntheticTransformationRatio: %d", echonet.syntheticTransformationRatio);
 }
 
 void loop() {
-    mqttLoop();
-
-    SmartMeterData data       = {0, 0, 0, 0};
+    static bool display       = false;
     static int failed_counter = 0;
 
-    if (WiFi.status() != WL_CONNECTED ||
-        !getData(&data) ||
-        !mqtt.publish("SmartMeter/Power/Instantaneous", String(data.instantaneousPower).c_str()) ||
-        !mqtt.publish("SmartMeter/Energy/Cumulative/Positive", String(data.cumulativeEnergyPositive).c_str()) ||
-        !mqtt.publish("SmartMeter/Current/Instantaneous/R", String(data.instantCurrent_R).c_str()) ||
-        !mqtt.publish("SmartMeter/Current/Instantaneous/T", String(data.instantCurrent_T).c_str())) {
+    M5.update();
+    if (M5.BtnA.wasPressed()) {
+        display = !display;
+    }
+    M5.Axp.ScreenBreath(display ? 12 : 0);
+
+    if (WiFi.status() != WL_CONNECTED) {
+        WiFi.begin(WIFI_SSID, WIFI_PASSPHRASE);
+        while (WiFi.status() != WL_CONNECTED) {
+            delay(WIFI_DELAY);
+        }
+    }
+
+    if (wisun.getSkStatus() != BP35A1::SkStatus::connected) {
+        if (wisun.initialize(50) == false) {
+            failed_counter++;
+            return;
+        }
+        if (initConstantData() == false) {
+            failed_counter++;
+            return;
+        } else {
+            log_i("ConvertCumulativeEnergyUnit : %f", echonet.cumulativeEnergyUnit);
+            log_i("SyntheticTransformationRatio: %d", echonet.syntheticTransformationRatio);
+        }
+    }
+
+    mqttLoop();
+
+    SmartMeterData data = {0, 0, 0, 0};
+    if (getData(&data) == false ||
+        mqtt.publish("SmartMeter/Power/Instantaneous", String(data.instantaneousPower).c_str()) == false ||
+        mqtt.publish("SmartMeter/Energy/Cumulative/Positive", String(data.cumulativeEnergyPositive).c_str()) == false ||
+        mqtt.publish("SmartMeter/Current/Instantaneous/R", String(data.instantCurrent_R).c_str()) == false ||
+        mqtt.publish("SmartMeter/Current/Instantaneous/T", String(data.instantCurrent_T).c_str()) == false) {
         failed_counter++;
     } else {
         log_i("InstantaneousPower       : %d W", data.instantaneousPower);
@@ -122,9 +158,16 @@ void loop() {
         log_i("InstantaneousCurrentT    : %f A", data.instantCurrent_T);
         failed_counter = 0;
     }
+    if (display) {
+        M5.Lcd.setCursor(0, 0, 2);
+        M5.Lcd.printf("Power  : %d W\n", data.instantaneousPower);
+        M5.Lcd.printf("Energy : %.2f kWh\n", data.cumulativeEnergyPositive);
+    }
 
-    if (failed_counter > 10)
-        esp_restart();
+    if (failed_counter > 10) {
+        wisun.resetSkStatus();
+        failed_counter = 0;
+    }
 
     delay(5000);
 }
