@@ -1,6 +1,7 @@
 #include "BP35A1.hpp"
 #include "LowVoltageSmartElectricEnergyMeter.hpp"
 #include "SmartMeterConfig.h"
+#include <ArduinoOTA.h>
 #include <M5StickC.h>
 #include <PubSubClient.h>
 #include <WiFi.h>
@@ -111,6 +112,7 @@ void setup() {
     mqtt.setKeepAlive(60);
     wisun.begin(115200, SERIAL_8N1, BP35A1_RX, BP35A1_TX, false, 20000UL);
     wisun.setStatusChangeCallback(Bp35a1StatusChangedCallback);
+    WiFi.setHostname("esp32-broute2mqtt-smartmeter");
 }
 
 void loop() {
@@ -129,7 +131,10 @@ void loop() {
         while (WiFi.status() != WL_CONNECTED) {
             delay(WIFI_DELAY);
         }
+        ArduinoOTA.begin();
     }
+
+    ArduinoOTA.handle();
 
     if (wisun.getSkStatus() != BP35A1::SkStatus::connected) {
         if (wisun.initialize(50) == false) {
