@@ -1,3 +1,4 @@
+#define HOSTNAME "esp32-broute2mqtt-smartmeter"
 #define BP35A1_RX 26
 #define BP35A1_TX 0
 #define B_ROUTE_ID "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
