@@ -1,16 +1,24 @@
 #include "BP35A1.hpp"
 #include "LowVoltageSmartElectricEnergyMeter.hpp"
 #include "SmartMeterConfig.h"
+#include <ArduinoOTA.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include <ESPmDNS.h>
 #include <M5StickC.h>
 #include <PubSubClient.h>
+#include <WebSerial.h>
 #include <WiFi.h>
 
 BP35A1 wisun = BP35A1(B_ROUTE_ID, B_ROUTE_PASSWORD);
 WiFiClient client;
 PubSubClient mqtt(MQTT_SERVER_URL, MQTT_SERVER_PORT, client);
 LowVoltageSmartElectricEnergyMeterClass echonet;
+AsyncWebServer server(80);
 
-extern void wifiTask(void *const param);
+extern void otaTask(void *const param);
+extern ArduinoOTAClass ArduinoOTA;
+
 typedef struct {
     int32_t instantaneousPower;
     float instantCurrent_R;
@@ -57,6 +65,58 @@ void setup() {
     M5.Lcd.setRotation(3);
 
     mqtt.setKeepAlive(60);
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send(200, "text/plain", "Hi! This is WebSerial demo. You can access webserial interface at http://" + WiFi.localIP().toString() + "/webserial");
+    });
+
+    ArduinoOTA.setTimeout(60000);
+    ArduinoOTA
+        .setHostname(HOSTNAME)
+        .setPort(3232)
+        .onStart([]() { log_i("Start updating %s", ArduinoOTA.getCommand() == U_FLASH ? "sketch" : "filesystem"); })
+        .onEnd([]() { log_i("\nEnd"); })
+        .onProgress([](const unsigned int progress, const unsigned int total) { log_i("Progress: %u%%\r", (progress / (total / 100))); })
+        .onError([](const ota_error_t error) { log_i("Error[%u]: ", error); });
+
+    WiFi.setHostname(HOSTNAME);
+    WiFi.setAutoReconnect(true);
+    WiFi.mode(WIFI_STA);
+    WiFi.onEvent([](const WiFiEvent_t event) {
+        log_i("WiFi event: %s(%d), WiFi status : %d", WiFi.eventName(event), event, WiFi.status());
+        switch (event) {
+            case SYSTEM_EVENT_STA_GOT_IP:
+                log_i("WiFi connected, IP: %s", WiFi.localIP().toString().c_str());
+                MDNS.begin(HOSTNAME);
+                ArduinoOTA.begin();
+                log_i("OTA Ready");
+                while (mqtt.connected() == false) {
+                    mqtt.connect(MQTT_CONNECT_ID, MQTT_CONNECT_USER, NULL, "SmartMeter/Status", 0, true, "offline");
+                    delay(1000);
+                }
+                log_i("MQTT Ready");
+                mqtt.publish("SmartMeter/Status", "online");
+                WebSerial.begin(&server);
+                server.begin();
+                break;
+        }
+    });
+
+    log_i("connecting to %s", WIFI_SSID);
+    WiFi.begin(WIFI_SSID, WIFI_PASSPHRASE);
+    while (WiFi.waitForConnectResult() != WL_CONNECTED) {
+        log_i("WiFi connection failed");
+        delay(10000);
+    }
+
+    esp_log_set_vprintf([](const char *fmt, va_list args) -> int {
+        static char logBuffer[512];
+        int len = vsnprintf(logBuffer, sizeof(logBuffer), fmt, args);
+        if (len > 0) {
+            WebSerial.println(logBuffer);
+        }
+        return len;
+    });
+
     wisun.begin(115200, SERIAL_8N1, BP35A1_RX, BP35A1_TX, false, 20000UL);
     wisun.setStatusChangeCallback([](const BP35A1::SkStatus status) {
         switch (status) {
@@ -77,7 +137,13 @@ void setup() {
         }
     });
 
-    xTaskCreatePinnedToCore(wifiTask, "WiFi_Task", 4096, NULL, 1, NULL, 1);
+    xTaskCreatePinnedToCore([](void *const param) {
+        while (true) {
+            ArduinoOTA.handle();
+            delay(100);
+        }
+    },
+                            "WiFi_Task", 4096, NULL, 1, NULL, 1);
 }
 
 void loop() {
@@ -135,5 +201,6 @@ void loop() {
         failed_counter = 0;
     }
 
+    WebSerial.loop();
     delay(5000);
 }
