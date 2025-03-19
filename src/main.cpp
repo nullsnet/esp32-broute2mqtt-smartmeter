@@ -2,7 +2,6 @@
 #include "LowVoltageSmartElectricEnergyMeter.hpp"
 #include "SmartMeterConfig.h"
 #include <ArduinoOTA.h>
-#include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <ESPmDNS.h>
 #include <M5StickC.h>
@@ -30,9 +29,6 @@ AsyncWebServer server(80);
 SmartMeterData data = {0, 0, 0, 0};
 QueueHandle_t queue;
 bool display = false;
-
-extern void otaTask(void *const param);
-extern ArduinoOTAClass ArduinoOTA;
 
 bool getData(SmartMeterData *const data, const uint32_t delayms = 100, const uint32_t timeoutms = 3000) {
     const auto properties = std::vector<LowVoltageSmartElectricEnergyMeterClass::Property>({
@@ -67,25 +63,43 @@ bool initConstantData(const uint32_t delayms = 100, const uint32_t timeoutms = 3
     return false;
 }
 
-void updateDisplay() {
+void switchDisplay(const bool display) {
+    M5.Axp.ScreenBreath(display ? 12 : 0);
+    digitalWrite(32, display ? LOW : HIGH);
+    M5.Lcd.writecommand(display ? 0x11 : 0x10);
     if (display) {
-        M5.Lcd.fillScreen(BLACK);
-        M5.Lcd.setTextColor(WHITE);
-        M5.Lcd.setCursor(0, 0, 2);
+        M5.Lcd.writecommand(0x29);
+    }
+}
+
+void updateDisplay() {
+    BP35A1::SkStatus status = wisun.getSkStatus();
+    M5.Lcd.fillScreen(BLACK);
+    M5.Lcd.setTextColor(WHITE);
+    M5.Lcd.setCursor(0, 0, 2);
+    if (status == BP35A1::SkStatus::connected) {
         M5.Lcd.printf("Power  : %d W\n", data.instantaneousPower);
         M5.Lcd.printf("Energy : %.2f kWh\n", data.cumulativeEnergyPositive);
+        WebSerial.printf("InstantaneousPower       : %d W\n", data.instantaneousPower);
+        WebSerial.printf("CumulativeEnergyPositive : %f kWh\n", data.cumulativeEnergyPositive);
+        WebSerial.printf("InstantaneousCurrentR    : %f A\n", data.instantCurrent_R);
+        WebSerial.printf("InstantaneousCurrentT    : %f A\n", data.instantCurrent_T);
+    } else {
+        M5.Lcd.printf("Status  : %d\n", status);
+        WebSerial.printf("Status  : %d\n", status);
     }
 }
 
 void setup() {
     // Init M5StickC
     M5.begin();
-    M5.Axp.ScreenBreath(0);
+    M5.Axp.ScreenBreath(12);
     M5.Lcd.setRotation(3);
+    pinMode(32, OUTPUT);
 
     mqtt.setKeepAlive(60);
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-        request->send(200, "text/plain", "Hi! This is WebSerial demo. You can access webserial interface at http://" + WiFi.localIP().toString() + "/webserial");
+        request->redirect("/webserial");
     });
 
     esp_log_set_vprintf([](const char *fmt, va_list args) -> int {
@@ -143,15 +157,19 @@ void setup() {
         switch (status) {
             case BP35A1::SkStatus::uninitialized:
                 mqtt.publish("SmartMeter/Status", "uninitialized", true);
+                updateDisplay();
                 break;
             case BP35A1::SkStatus::connecting:
                 mqtt.publish("SmartMeter/Status", "connecting", true);
+                updateDisplay();
                 break;
             case BP35A1::SkStatus::scanning:
                 mqtt.publish("SmartMeter/Status", "scanning", true);
+                updateDisplay();
                 break;
             case BP35A1::SkStatus::connected:
                 mqtt.publish("SmartMeter/Status", "connected", true);
+                switchDisplay(false);
                 break;
             default:
                 break;
@@ -168,8 +186,7 @@ void setup() {
                 switch (event) {
                     case EventPressHomeButton:
                         display = !display;
-                        M5.Axp.ScreenBreath(display ? 12 : 0);
-                        M5.Lcd.setRotation(display ? 3 : 0);
+                        switchDisplay(display);
                         updateDisplay();
                         break;
                     default:
