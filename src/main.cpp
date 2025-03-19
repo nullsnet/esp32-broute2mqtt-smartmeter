@@ -10,21 +10,29 @@
 #include <WebSerial.h>
 #include <WiFi.h>
 
-BP35A1 wisun = BP35A1(B_ROUTE_ID, B_ROUTE_PASSWORD);
-WiFiClient client;
-PubSubClient mqtt(MQTT_SERVER_URL, MQTT_SERVER_PORT, client);
-LowVoltageSmartElectricEnergyMeterClass echonet;
-AsyncWebServer server(80);
-
-extern void otaTask(void *const param);
-extern ArduinoOTAClass ArduinoOTA;
-
 typedef struct {
     int32_t instantaneousPower;
     float instantCurrent_R;
     float instantCurrent_T;
     float cumulativeEnergyPositive;
 } SmartMeterData;
+
+typedef enum {
+    EventInvalid = 0,
+    EventPressHomeButton,
+} EventType;
+
+BP35A1 wisun = BP35A1(B_ROUTE_ID, B_ROUTE_PASSWORD);
+WiFiClient client;
+PubSubClient mqtt(MQTT_SERVER_URL, MQTT_SERVER_PORT, client);
+LowVoltageSmartElectricEnergyMeterClass echonet;
+AsyncWebServer server(80);
+SmartMeterData data = {0, 0, 0, 0};
+QueueHandle_t queue;
+bool display = false;
+
+extern void otaTask(void *const param);
+extern ArduinoOTAClass ArduinoOTA;
 
 bool getData(SmartMeterData *const data, const uint32_t delayms = 100, const uint32_t timeoutms = 3000) {
     const auto properties = std::vector<LowVoltageSmartElectricEnergyMeterClass::Property>({
@@ -59,7 +67,18 @@ bool initConstantData(const uint32_t delayms = 100, const uint32_t timeoutms = 3
     return false;
 }
 
+void updateDisplay() {
+    if (display) {
+        M5.Lcd.fillScreen(BLACK);
+        M5.Lcd.setTextColor(WHITE);
+        M5.Lcd.setCursor(0, 0, 2);
+        M5.Lcd.printf("Power  : %d W\n", data.instantaneousPower);
+        M5.Lcd.printf("Energy : %.2f kWh\n", data.cumulativeEnergyPositive);
+    }
+}
+
 void setup() {
+    // Init M5StickC
     M5.begin();
     M5.Axp.ScreenBreath(0);
     M5.Lcd.setRotation(3);
@@ -69,6 +88,16 @@ void setup() {
         request->send(200, "text/plain", "Hi! This is WebSerial demo. You can access webserial interface at http://" + WiFi.localIP().toString() + "/webserial");
     });
 
+    esp_log_set_vprintf([](const char *fmt, va_list args) -> int {
+        static char logBuffer[512];
+        int len = vsnprintf(logBuffer, sizeof(logBuffer), fmt, args);
+        if (len > 0) {
+            WebSerial.println(logBuffer);
+        }
+        return len;
+    });
+
+    // Init OTA
     ArduinoOTA.setTimeout(60000);
     ArduinoOTA
         .setHostname(HOSTNAME)
@@ -78,6 +107,7 @@ void setup() {
         .onProgress([](const unsigned int progress, const unsigned int total) { log_i("Progress: %u%%\r", (progress / (total / 100))); })
         .onError([](const ota_error_t error) { log_i("Error[%u]: ", error); });
 
+    // Init WiFi
     WiFi.setHostname(HOSTNAME);
     WiFi.setAutoReconnect(true);
     WiFi.mode(WIFI_STA);
@@ -100,7 +130,6 @@ void setup() {
                 break;
         }
     });
-
     log_i("connecting to %s", WIFI_SSID);
     WiFi.begin(WIFI_SSID, WIFI_PASSPHRASE);
     while (WiFi.waitForConnectResult() != WL_CONNECTED) {
@@ -108,15 +137,7 @@ void setup() {
         delay(10000);
     }
 
-    esp_log_set_vprintf([](const char *fmt, va_list args) -> int {
-        static char logBuffer[512];
-        int len = vsnprintf(logBuffer, sizeof(logBuffer), fmt, args);
-        if (len > 0) {
-            WebSerial.println(logBuffer);
-        }
-        return len;
-    });
-
+    // Init BP35A1
     wisun.begin(115200, SERIAL_8N1, BP35A1_RX, BP35A1_TX, false, 20000UL);
     wisun.setStatusChangeCallback([](const BP35A1::SkStatus status) {
         switch (status) {
@@ -137,25 +158,49 @@ void setup() {
         }
     });
 
-    xTaskCreatePinnedToCore([](void *const param) {
+    queue = xQueueCreate(10, sizeof(EventType));
+
+    // Event Task
+    const TaskFunction_t eventTask = [](void *const param) {
+        EventType event = EventInvalid;
+        while (1) {
+            if (xQueueReceive(queue, &event, portMAX_DELAY) == pdTRUE) {
+                switch (event) {
+                    case EventPressHomeButton:
+                        display = !display;
+                        M5.Axp.ScreenBreath(display ? 12 : 0);
+                        M5.Lcd.setRotation(display ? 3 : 0);
+                        updateDisplay();
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+    };
+    xTaskCreatePinnedToCore(eventTask, "EventTask", 4096, NULL, 1, NULL, 1);
+
+    // OTA Task
+    const TaskFunction_t otaTaskFunction = [](void *const param) {
         while (true) {
             ArduinoOTA.handle();
             delay(100);
         }
-    },
-                            "WiFi_Task", 4096, NULL, 1, NULL, 1);
+    };
+    xTaskCreatePinnedToCore(otaTaskFunction, "OtaTask", 4096, NULL, 1, NULL, 1);
+
+    // Home button ISR
+    pinMode(M5_BUTTON_HOME, INPUT_PULLUP);
+    const auto m5ButtonHomeIsr = []() {
+        EventType event = EventPressHomeButton;
+        xQueueSend(queue, &event, portMAX_DELAY);
+    };
+    attachInterrupt(M5_BUTTON_HOME, m5ButtonHomeIsr, FALLING);
 }
 
 void loop() {
-    static bool display                   = false;
     static int failed_counter             = 0;
     static bool initialized_constant_data = false;
-
-    M5.update();
-    if (M5.BtnA.wasPressed()) {
-        display = !display;
-    }
-    M5.Axp.ScreenBreath(display ? 12 : 0);
 
     if (wisun.getSkStatus() != BP35A1::SkStatus::connected) {
         if (wisun.initialize(50) == false) {
@@ -176,7 +221,6 @@ void loop() {
 
     mqtt.loop();
 
-    SmartMeterData data = {0, 0, 0, 0};
     if (getData(&data) == false ||
         mqtt.publish("SmartMeter/Power/Instantaneous", String(data.instantaneousPower).c_str()) == false ||
         mqtt.publish("SmartMeter/Energy/Cumulative/Positive", String(data.cumulativeEnergyPositive).c_str()) == false ||
@@ -188,12 +232,8 @@ void loop() {
         log_i("CumulativeEnergyPositive : %f kWh", data.cumulativeEnergyPositive);
         log_i("InstantaneousCurrentR    : %f A", data.instantCurrent_R);
         log_i("InstantaneousCurrentT    : %f A", data.instantCurrent_T);
+        updateDisplay();
         failed_counter = 0;
-    }
-    if (display) {
-        M5.Lcd.setCursor(0, 0, 2);
-        M5.Lcd.printf("Power  : %d W\n", data.instantaneousPower);
-        M5.Lcd.printf("Energy : %.2f kWh\n", data.cumulativeEnergyPositive);
     }
 
     if (failed_counter > 10) {
@@ -202,5 +242,5 @@ void loop() {
     }
 
     WebSerial.loop();
-    delay(5000);
+    delay(1000);
 }
