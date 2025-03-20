@@ -9,13 +9,6 @@
 #include <WebSerial.h>
 #include <WiFi.h>
 
-typedef struct {
-    int32_t instantaneousPower;
-    float instantCurrent_R;
-    float instantCurrent_T;
-    float cumulativeEnergyPositive;
-} SmartMeterData;
-
 typedef enum {
     EventInvalid = 0,
     EventPressHomeButton,
@@ -26,11 +19,15 @@ WiFiClient client;
 PubSubClient mqtt(MQTT_SERVER_URL, MQTT_SERVER_PORT, client);
 LowVoltageSmartElectricEnergyMeterClass echonet;
 AsyncWebServer server(80);
-SmartMeterData data = {0, 0, 0, 0};
+struct SmartMeterData {
+    int32_t instantaneousPower;
+    float instantCurrent_R;
+    float instantCurrent_T;
+    float cumulativeEnergyPositive;
+} data = {0, 0, 0, 0};
 QueueHandle_t queue;
-bool display = false;
 
-bool getData(SmartMeterData *const data, const uint32_t delayms = 100, const uint32_t timeoutms = 3000) {
+bool getData(struct SmartMeterData *const data, const uint32_t delayms = 100, const uint32_t timeoutms = 3000) {
     const auto properties = std::vector<LowVoltageSmartElectricEnergyMeterClass::Property>({
         LowVoltageSmartElectricEnergyMeterClass::Property::InstantaneousPower,
         LowVoltageSmartElectricEnergyMeterClass::Property::InstantaneousCurrents,
@@ -45,7 +42,6 @@ bool getData(SmartMeterData *const data, const uint32_t delayms = 100, const uin
             return true;
         }
     }
-
     return false;
 }
 
@@ -102,24 +98,15 @@ void setup() {
         request->redirect("/webserial");
     });
 
-    esp_log_set_vprintf([](const char *fmt, va_list args) -> int {
-        static char logBuffer[512];
-        int len = vsnprintf(logBuffer, sizeof(logBuffer), fmt, args);
-        if (len > 0) {
-            WebSerial.println(logBuffer);
-        }
-        return len;
-    });
-
     // Init OTA
-    ArduinoOTA.setTimeout(60000);
     ArduinoOTA
         .setHostname(HOSTNAME)
         .setPort(3232)
         .onStart([]() { log_i("Start updating %s", ArduinoOTA.getCommand() == U_FLASH ? "sketch" : "filesystem"); })
         .onEnd([]() { log_i("\nEnd"); })
         .onProgress([](const unsigned int progress, const unsigned int total) { log_i("Progress: %u%%\r", (progress / (total / 100))); })
-        .onError([](const ota_error_t error) { log_i("Error[%u]: ", error); });
+        .onError([](const ota_error_t error) { log_i("Error[%u]: ", error); })
+        .setTimeout(60000);
 
     // Init WiFi
     WiFi.setHostname(HOSTNAME);
@@ -127,21 +114,19 @@ void setup() {
     WiFi.mode(WIFI_STA);
     WiFi.onEvent([](const WiFiEvent_t event) {
         log_i("WiFi event: %s(%d), WiFi status : %d", WiFi.eventName(event), event, WiFi.status());
-        switch (event) {
-            case SYSTEM_EVENT_STA_GOT_IP:
-                log_i("WiFi connected, IP: %s", WiFi.localIP().toString().c_str());
-                MDNS.begin(HOSTNAME);
-                ArduinoOTA.begin();
-                log_i("OTA Ready");
-                while (mqtt.connected() == false) {
-                    mqtt.connect(MQTT_CONNECT_ID, MQTT_CONNECT_USER, NULL, "SmartMeter/Status", 0, true, "offline");
-                    delay(1000);
-                }
-                log_i("MQTT Ready");
-                mqtt.publish("SmartMeter/Status", "online");
-                WebSerial.begin(&server);
-                server.begin();
-                break;
+        if (event == (WiFiEvent_t)SYSTEM_EVENT_STA_GOT_IP) {
+            log_i("WiFi connected, IP: %s", WiFi.localIP().toString().c_str());
+            MDNS.begin(HOSTNAME);
+            ArduinoOTA.begin();
+            log_i("OTA Ready");
+            while (mqtt.connected() == false) {
+                mqtt.connect(MQTT_CONNECT_ID, MQTT_CONNECT_USER, NULL, "SmartMeter/Status", 0, true, "offline");
+                delay(1000);
+            }
+            log_i("MQTT Ready");
+            mqtt.publish("SmartMeter/Status", "online");
+            WebSerial.begin(&server);
+            server.begin();
         }
     });
     log_i("connecting to %s", WIFI_SSID);
@@ -153,44 +138,23 @@ void setup() {
 
     // Init BP35A1
     wisun.begin(115200, SERIAL_8N1, BP35A1_RX, BP35A1_TX, false, 20000UL);
-    wisun.setStatusChangeCallback([](const BP35A1::SkStatus status) {
-        switch (status) {
-            case BP35A1::SkStatus::uninitialized:
-                mqtt.publish("SmartMeter/Status", "uninitialized", true);
-                updateDisplay();
-                break;
-            case BP35A1::SkStatus::connecting:
-                mqtt.publish("SmartMeter/Status", "connecting", true);
-                updateDisplay();
-                break;
-            case BP35A1::SkStatus::scanning:
-                mqtt.publish("SmartMeter/Status", "scanning", true);
-                updateDisplay();
-                break;
-            case BP35A1::SkStatus::connected:
-                mqtt.publish("SmartMeter/Status", "connected", true);
-                switchDisplay(false);
-                break;
-            default:
-                break;
-        }
+    wisun.setStatusChangeCallback([](const BP35A1::SkStatus status) -> void {
+        mqtt.publish("SmartMeter/Status", ((const char *const[]){"uninitialized", "scanning", "connecting", "connected"})[(int)status], true);
+        status == BP35A1::SkStatus::connected ? switchDisplay(false) : updateDisplay();
     });
 
     queue = xQueueCreate(10, sizeof(EventType));
 
     // Event Task
-    const TaskFunction_t eventTask = [](void *const param) {
+    const TaskFunction_t eventTask = [](void *const param) -> void {
         EventType event = EventInvalid;
+        bool display    = false;
         while (1) {
             if (xQueueReceive(queue, &event, portMAX_DELAY) == pdTRUE) {
-                switch (event) {
-                    case EventPressHomeButton:
-                        display = !display;
-                        switchDisplay(display);
-                        updateDisplay();
-                        break;
-                    default:
-                        break;
+                if (event == EventPressHomeButton) {
+                    display = !display;
+                    switchDisplay(display);
+                    updateDisplay();
                 }
             }
         }
@@ -198,7 +162,7 @@ void setup() {
     xTaskCreatePinnedToCore(eventTask, "EventTask", 4096, NULL, 1, NULL, 1);
 
     // OTA Task
-    const TaskFunction_t otaTaskFunction = [](void *const param) {
+    const TaskFunction_t otaTaskFunction = [](void *const param) -> void {
         while (true) {
             ArduinoOTA.handle();
             delay(100);
@@ -208,7 +172,7 @@ void setup() {
 
     // Home button ISR
     pinMode(M5_BUTTON_HOME, INPUT_PULLUP);
-    const auto m5ButtonHomeIsr = []() {
+    const auto m5ButtonHomeIsr = []() -> void {
         EventType event = EventPressHomeButton;
         xQueueSend(queue, &event, portMAX_DELAY);
     };
@@ -216,9 +180,7 @@ void setup() {
 }
 
 void loop() {
-    static int failed_counter             = 0;
-    static bool initialized_constant_data = false;
-
+    static int failed_counter = 0;
     if (wisun.getSkStatus() != BP35A1::SkStatus::connected) {
         if (wisun.initialize(50) == false) {
             failed_counter++;
@@ -226,6 +188,7 @@ void loop() {
         }
     }
 
+    static bool initialized_constant_data = false;
     if (initialized_constant_data == false) {
         initialized_constant_data = initConstantData();
         if (initialized_constant_data == false) {
