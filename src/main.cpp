@@ -217,8 +217,7 @@ void loop() {
     }
 
     if (failed_counter > 10) {
-        wisun.resetSkStatus();
-        failed_counter = 0;
+        esp_restart();
     }
 
     WebSerial.loop();
