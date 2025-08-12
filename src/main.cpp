@@ -4,7 +4,7 @@
 #include <ArduinoOTA.h>
 #include <ESPAsyncWebServer.h>
 #include <ESPmDNS.h>
-#include <M5StickC.h>
+#include <M5Unified.h>
 #include <PubSubClient.h>
 #include <WebSerial.h>
 #include <WiFi.h>
@@ -60,7 +60,7 @@ bool initConstantData(const uint32_t delayms = 100, const uint32_t timeoutms = 3
 }
 
 void switchDisplay(const bool display) {
-    M5.Axp.ScreenBreath(display ? 12 : 0);
+    M5.Display.setBrightness(display ? 128 : 0);
     digitalWrite(32, display ? LOW : HIGH);
     M5.Lcd.writecommand(display ? 0x11 : 0x10);
     if (display) {
@@ -70,27 +70,29 @@ void switchDisplay(const bool display) {
 
 void updateDisplay() {
     BP35A1::SkStatus status = wisun.getSkStatus();
-    M5.Lcd.fillScreen(BLACK);
-    M5.Lcd.setTextColor(WHITE);
-    M5.Lcd.setCursor(0, 0, 2);
+    M5.Display.fillScreen(TFT_BLACK);
+    M5.Display.setTextColor(TFT_WHITE);
+    M5.Display.setCursor(0, 0);
+    M5.Display.setFont(&fonts::Font2);
     if (status == BP35A1::SkStatus::connected) {
-        M5.Lcd.printf("Power  : %d W\n", data.instantaneousPower);
-        M5.Lcd.printf("Energy : %.2f kWh\n", data.cumulativeEnergyPositive);
+        M5.Display.printf("Power  : %d W\n", data.instantaneousPower);
+        M5.Display.printf("Energy : %.2f kWh\n", data.cumulativeEnergyPositive);
         WebSerial.printf("InstantaneousPower       : %d W\n", data.instantaneousPower);
         WebSerial.printf("CumulativeEnergyPositive : %f kWh\n", data.cumulativeEnergyPositive);
         WebSerial.printf("InstantaneousCurrentR    : %f A\n", data.instantCurrent_R);
         WebSerial.printf("InstantaneousCurrentT    : %f A\n", data.instantCurrent_T);
     } else {
-        M5.Lcd.printf("Status  : %d\n", status);
+        M5.Display.printf("Status  : %d\n", status);
         WebSerial.printf("Status  : %d\n", status);
     }
 }
 
 void setup() {
     // Init M5StickC
-    M5.begin();
-    M5.Axp.ScreenBreath(12);
-    M5.Lcd.setRotation(3);
+    m5::M5Unified::config_t cfg = M5.config();
+    M5.begin(cfg);
+    M5.Display.setBrightness(128);
+    M5.Display.setRotation(3);
     pinMode(32, OUTPUT);
 
     mqtt.setKeepAlive(60);
@@ -132,7 +134,7 @@ void setup() {
     log_i("connecting to %s", WIFI_SSID);
     WiFi.begin(WIFI_SSID, WIFI_PASSPHRASE);
     while (WiFi.waitForConnectResult() != WL_CONNECTED) {
-        log_i("WiFi connection failed");
+        log_i("WiFi connecting to %s failed", WIFI_SSID);
         delay(10000);
     }
 
@@ -171,12 +173,12 @@ void setup() {
     xTaskCreatePinnedToCore(otaTaskFunction, "OtaTask", 4096, NULL, 1, NULL, 1);
 
     // Home button ISR
-    pinMode(M5_BUTTON_HOME, INPUT_PULLUP);
+    pinMode(37, INPUT_PULLUP);
     const auto m5ButtonHomeIsr = []() -> void {
         EventType event = EventPressHomeButton;
         xQueueSend(queue, &event, portMAX_DELAY);
     };
-    attachInterrupt(M5_BUTTON_HOME, m5ButtonHomeIsr, FALLING);
+    attachInterrupt(37, m5ButtonHomeIsr, FALLING);
 }
 
 void loop() {
