@@ -1,9 +1,11 @@
 #include "BP35A1.hpp"
+#include "HardwareSerialAdapter.h"
 #include "LowVoltageSmartElectricEnergyMeter.hpp"
 #include "SmartMeterConfig.h"
 #include <ArduinoOTA.h>
 #include <ESPAsyncWebServer.h>
 #include <ESPmDNS.h>
+#include <HardwareSerial.h>
 #include <M5Unified.h>
 #include <PubSubClient.h>
 #include <WebSerial.h>
@@ -14,50 +16,19 @@ typedef enum {
     EventPressHomeButton,
 } EventType;
 
-BP35A1 wisun = BP35A1(B_ROUTE_ID, B_ROUTE_PASSWORD);
+HardwareSerial wisunSerial(1);
+HardwareSerialAdapter wisunAdapter(wisunSerial);
+BP35A1 wisun(B_ROUTE_ID, B_ROUTE_PASSWORD, wisunAdapter);
 WiFiClient client;
 PubSubClient mqtt(MQTT_SERVER_URL, MQTT_SERVER_PORT, client);
-LowVoltageSmartElectricEnergyMeterClass echonet;
 AsyncWebServer server(80);
-struct SmartMeterData {
+typedef struct {
     int32_t instantaneousPower;
-    float instantCurrent_R;
-    float instantCurrent_T;
+    float instantaneousCurrentR;
+    float instantaneousCurrentT;
     float cumulativeEnergyPositive;
-} data = {0, 0, 0, 0};
+} SmartMeterData;
 QueueHandle_t queue;
-
-bool getData(struct SmartMeterData *const data, const uint32_t delayms = 100, const uint32_t timeoutms = 3000) {
-    const auto properties = std::vector<LowVoltageSmartElectricEnergyMeterClass::Property>({
-        LowVoltageSmartElectricEnergyMeterClass::Property::InstantaneousPower,
-        LowVoltageSmartElectricEnergyMeterClass::Property::InstantaneousCurrents,
-        LowVoltageSmartElectricEnergyMeterClass::Property::CumulativeEnergyPositive,
-    });
-    echonet.generateGetRequest(properties);
-    if (wisun.sendUdpData(echonet.getRawData().data(), echonet.size(), 100, properties.size() * 3000)) {
-        if (echonet.load(wisun.getUdpData(100, properties.size() * 3000).payload.c_str()) &&
-            echonet.getInstantaneousPower(&data->instantaneousPower) &&
-            echonet.getInstantaneousCurrent(&data->instantCurrent_R, &data->instantCurrent_T) &&
-            echonet.getCumulativeEnergyPositive(&data->cumulativeEnergyPositive)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool initConstantData(const uint32_t delayms = 100, const uint32_t timeoutms = 3000) {
-    const auto properties = std::vector<LowVoltageSmartElectricEnergyMeterClass::Property>({
-        LowVoltageSmartElectricEnergyMeterClass::Property::Coefficient,
-        LowVoltageSmartElectricEnergyMeterClass::Property::CumulativeEnergyUnit,
-    });
-    echonet.generateGetRequest(properties);
-    if (wisun.sendUdpData(echonet.getRawData().data(), echonet.size(), 100, properties.size() * 3000)) {
-        if (echonet.load(wisun.getUdpData(100, properties.size() * 3000).payload.c_str()) && echonet.initConstantData()) {
-            return true;
-        }
-    }
-    return false;
-}
 
 void switchDisplay(const bool display) {
     M5.Display.setBrightness(display ? 128 : 0);
@@ -68,22 +39,37 @@ void switchDisplay(const bool display) {
     }
 }
 
-void updateDisplay() {
-    BP35A1::SkStatus status = wisun.getSkStatus();
+void updateData(const SmartMeterData &data) {
     M5.Display.fillScreen(TFT_BLACK);
     M5.Display.setTextColor(TFT_WHITE);
     M5.Display.setCursor(0, 0);
     M5.Display.setFont(&fonts::Font2);
-    if (status == BP35A1::SkStatus::connected) {
-        M5.Display.printf("Power  : %d W\n", data.instantaneousPower);
-        M5.Display.printf("Energy : %.2f kWh\n", data.cumulativeEnergyPositive);
-        WebSerial.printf("InstantaneousPower       : %d W\n", data.instantaneousPower);
-        WebSerial.printf("CumulativeEnergyPositive : %f kWh\n", data.cumulativeEnergyPositive);
-        WebSerial.printf("InstantaneousCurrentR    : %f A\n", data.instantCurrent_R);
-        WebSerial.printf("InstantaneousCurrentT    : %f A\n", data.instantCurrent_T);
-    } else {
-        M5.Display.printf("Status  : %d\n", status);
-        WebSerial.printf("Status  : %d\n", status);
+
+    log_i("InstantaneousPower       : %d W", data.instantaneousPower);
+    log_i("CumulativeEnergyPositive : %f kWh", data.cumulativeEnergyPositive);
+    log_i("InstantaneousCurrentR    : %f A", data.instantaneousCurrentR);
+    log_i("InstantaneousCurrentT    : %f A", data.instantaneousCurrentT);
+
+    M5.Display.printf("Power  : %d W\n", data.instantaneousPower);
+    M5.Display.printf("Energy : %.2f kWh\n", data.cumulativeEnergyPositive);
+
+    WebSerial.printf("InstantaneousPower       : %d W\n", data.instantaneousPower);
+    WebSerial.printf("CumulativeEnergyPositive : %f kWh\n", data.cumulativeEnergyPositive);
+    WebSerial.printf("InstantaneousCurrentR    : %f A\n", data.instantaneousCurrentR);
+    WebSerial.printf("InstantaneousCurrentT    : %f A\n", data.instantaneousCurrentT);
+
+    mqtt.publish("SmartMeter/Power/Instantaneous", String(data.instantaneousPower).c_str());
+    mqtt.publish("SmartMeter/Energy/Cumulative/Positive", String(data.cumulativeEnergyPositive).c_str());
+    mqtt.publish("SmartMeter/Current/Instantaneous/R", String(data.instantaneousCurrentR).c_str());
+    mqtt.publish("SmartMeter/Current/Instantaneous/T", String(data.instantaneousCurrentT).c_str());
+}
+
+void smartMeterLoop(LowVoltageSmartElectricEnergyMeterClass smartMeter) {
+    SmartMeterData data;
+    if (smartMeter.getInstantaneousPower(&data.instantaneousPower) &&
+        smartMeter.getInstantaneousCurrent(&data.instantaneousCurrentR, &data.instantaneousCurrentT) &&
+        smartMeter.getCumulativeEnergyPositive(&data.cumulativeEnergyPositive)) {
+        updateData(data);
     }
 }
 
@@ -93,6 +79,7 @@ void setup() {
     M5.begin(cfg);
     M5.Display.setBrightness(128);
     M5.Display.setRotation(3);
+    switchDisplay(false);
     pinMode(32, OUTPUT);
 
     mqtt.setKeepAlive(60);
@@ -139,10 +126,9 @@ void setup() {
     }
 
     // Init BP35A1
-    wisun.begin(115200, SERIAL_8N1, BP35A1_RX, BP35A1_TX, false, 20000UL);
-    wisun.setStatusChangeCallback([](const BP35A1::SkStatus status) -> void {
-        mqtt.publish("SmartMeter/Status", ((const char *const[]){"uninitialized", "scanning", "connecting", "connected"})[(int)status], true);
-        status == BP35A1::SkStatus::connected ? switchDisplay(false) : updateDisplay();
+    wisunSerial.begin(115200, SERIAL_8N1, BP35A1_RX, BP35A1_TX, false, 20000UL);
+    wisun.setStatusChangeCallback([](const BP35A1::InitializeState status) -> void {
+        mqtt.publish("SmartMeter/Status", status == BP35A1::InitializeState::readySmartMeter ? "connected" : "initializing");
     });
 
     queue = xQueueCreate(10, sizeof(EventType));
@@ -156,7 +142,6 @@ void setup() {
                 if (event == EventPressHomeButton) {
                     display = !display;
                     switchDisplay(display);
-                    updateDisplay();
                 }
             }
         }
@@ -174,52 +159,49 @@ void setup() {
 
     // Home button ISR
     pinMode(37, INPUT_PULLUP);
-    const auto m5ButtonHomeIsr = []() -> void {
+    attachInterrupt(37, []() -> void {
         EventType event = EventPressHomeButton;
-        xQueueSend(queue, &event, portMAX_DELAY);
-    };
-    attachInterrupt(37, m5ButtonHomeIsr, FALLING);
+        xQueueSend(queue, &event, portMAX_DELAY); }, FALLING);
 }
 
 void loop() {
-    static int failed_counter = 0;
-    if (wisun.getSkStatus() != BP35A1::SkStatus::connected) {
-        if (wisun.initialize(50) == false) {
-            failed_counter++;
-            return;
-        }
-    }
+    static uint32_t initStart = 0;
+    static uint32_t waitStart = 0;
 
-    static bool initialized_constant_data = false;
-    if (initialized_constant_data == false) {
-        initialized_constant_data = initConstantData();
-        if (initialized_constant_data == false) {
-            failed_counter++;
-            return;
+    if (wisun.getInitializeState() != BP35A1::InitializeState::readySmartMeter) {
+        wisun.initializeLoop();
+        if (initStart == 0) {
+            initStart = millis();
+        } else if ((millis() - initStart) >= 180000UL) {
+            log_e("Initialization timeout, restarting...");
+            ESP.restart();
         }
-        log_i("ConvertCumulativeEnergyUnit : %f", echonet.cumulativeEnergyUnit);
-        log_i("SyntheticTransformationRatio: %d", echonet.syntheticTransformationRatio);
+        return;
     }
 
     mqtt.loop();
 
-    if (getData(&data) == false ||
-        mqtt.publish("SmartMeter/Power/Instantaneous", String(data.instantaneousPower).c_str()) == false ||
-        mqtt.publish("SmartMeter/Energy/Cumulative/Positive", String(data.cumulativeEnergyPositive).c_str()) == false ||
-        mqtt.publish("SmartMeter/Current/Instantaneous/R", String(data.instantCurrent_R).c_str()) == false ||
-        mqtt.publish("SmartMeter/Current/Instantaneous/T", String(data.instantCurrent_T).c_str()) == false) {
-        failed_counter++;
+    if (wisun.getCommunicationState() == BP35A1::CommunicationState::ready) {
+        wisun.sendPropertyRequest(std::vector<LowVoltageSmartElectricEnergyMeterClass::Property>({
+            LowVoltageSmartElectricEnergyMeterClass::Property::InstantaneousPower,
+            LowVoltageSmartElectricEnergyMeterClass::Property::InstantaneousCurrents,
+            LowVoltageSmartElectricEnergyMeterClass::Property::CumulativeEnergyPositive,
+        }));
     } else {
-        log_i("InstantaneousPower       : %d W", data.instantaneousPower);
-        log_i("CumulativeEnergyPositive : %f kWh", data.cumulativeEnergyPositive);
-        log_i("InstantaneousCurrentR    : %f A", data.instantCurrent_R);
-        log_i("InstantaneousCurrentT    : %f A", data.instantCurrent_T);
-        updateDisplay();
-        failed_counter = 0;
-    }
-
-    if (failed_counter > 10) {
-        esp_restart();
+        if (wisun.communicationLoop(smartMeterLoop, BP35A1::CommunicationState::ready)) {
+            waitStart = 0;
+        } else {
+            if (waitStart == 0) {
+                waitStart = millis();
+            }
+            uint32_t elapsed = millis() - waitStart;
+            log_d("wait %lu sec...", elapsed / 1000);
+            if (elapsed >= 10000UL) {
+                log_i("retry...");
+                wisun.resetCommunicationState();
+                waitStart = 0;
+            }
+        }
     }
 
     WebSerial.loop();

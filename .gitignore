@@ -4,3 +4,9 @@
 .vscode/launch.json
 .vscode/ipch
 include/SmartMeterConfig.h
+
+/config/
+/.esphome/
+secrets.yaml
+__pycache__
+venv
